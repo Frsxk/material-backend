@@ -5,7 +5,7 @@ import { form } from './modules/form';
 import { submission } from './modules/submission';
 
 const app = new Elysia()
-  .use(cors({ origin: 'http://localhost:3000' }))
+  .use(cors({ origin: ['http://localhost:3000', 'https://material-forms.netlify.app'] }))
   .use(auth)
   .use(form)
   .use(submission)
