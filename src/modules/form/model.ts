@@ -1,5 +1,19 @@
 import { Elysia, t } from 'elysia';
 
+const error = t.Object({ error: t.String() });
+
+const formItem = t.Object({
+  id: t.String(),
+  title: t.String(),
+  description: t.Nullable(t.String()),
+  status: t.String(),
+  themeColor: t.String(),
+  questions: t.Unknown(),
+  responseCount: t.Number(),
+  createdAt: t.String(),
+  updatedAt: t.String(),
+}, { description: 'Form with response count and timestamps' });
+
 export const formModel = new Elysia({ name: 'Model.Form' }).model({
   'form.create': t.Object({
     title: t.Optional(t.String()),
@@ -44,4 +58,8 @@ export const formModel = new Elysia({ name: 'Model.Form' }).model({
       )
     ),
   }),
+  'form.item': formItem,
+  'form.list': t.Array(formItem),
+  'form.success': t.Object({ success: t.Boolean() }),
+  'form.error': error,
 });

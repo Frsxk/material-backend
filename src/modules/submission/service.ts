@@ -1,3 +1,4 @@
+import { status } from 'elysia';
 import { prisma } from '../../db';
 
 interface Question {
@@ -29,7 +30,8 @@ export class SubmissionService {
   static async getPublicForm(formId: string) {
     const form = await prisma.form.findUnique({ where: { id: formId } });
 
-    if (!form || form.status !== 'PUBLISHED') return null;
+    if (!form || form.status !== 'PUBLISHED')
+      return status(404, { error: 'Form not found or not published' });
 
     return {
       id: form.id,
@@ -44,7 +46,7 @@ export class SubmissionService {
   static async submit(formId: string, answers: Record<string, string | string[]>) {
     const form = await prisma.form.findUnique({ where: { id: formId } });
     if (!form || form.status !== 'PUBLISHED') {
-      return { error: 'not_found' as const };
+      return status(404, { error: 'Form not found or not accepting responses' });
     }
 
     // Validate required questions are answered
@@ -59,10 +61,10 @@ export class SubmissionService {
       });
 
     if (missingRequired.length > 0) {
-      return {
-        error: 'validation' as const,
+      return status(422, {
+        error: 'Missing required answers',
         fields: missingRequired.map((q) => ({ id: q.id, title: q.title })),
-      };
+      });
     }
 
     const submission = await prisma.submission.create({
@@ -73,9 +75,10 @@ export class SubmissionService {
   }
 
   /** Aggregate submissions into FormStats shape for the analytics page */
-  static async getStats(formId: string) {
+  static async getStats(formId: string, userId: string) {
     const form = await prisma.form.findUnique({ where: { id: formId } });
-    if (!form) return null;
+    if (!form) return status(404, { error: 'Form not found' });
+    if (form.userId !== userId) return status(403, { error: 'Not authorized' });
 
     const rawSubmissions = await prisma.submission.findMany({
       where: { formId },
@@ -181,5 +184,67 @@ export class SubmissionService {
       questionStats,
       responsesOverTime,
     };
+  }
+
+  /** Export all submissions for a form as a CSV string */
+  static async exportCsv(formId: string, userId: string) {
+    const form = await prisma.form.findUnique({ where: { id: formId } });
+    if (!form) return status(404, { error: 'Form not found' });
+    if (form.userId !== userId) return status(403, { error: 'Not authorized' });
+
+    const questions = form.questions as unknown as Question[];
+    const rawSubmissions = await prisma.submission.findMany({
+      where: { formId },
+      orderBy: { submittedAt: 'asc' },
+    });
+    const submissions = rawSubmissions as unknown as SubmissionRow[];
+
+    // Build header row
+    const headers = ['Submission ID', 'Submitted At', ...questions.map((q) => q.title)];
+
+    // Build data rows
+    const rows = submissions.map((sub) => {
+      const submittedAt = new Intl.DateTimeFormat('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+      }).format(sub.submittedAt);
+      const base = [sub.id, submittedAt];
+      const answers = questions.map((q) => {
+        const val = sub.answers[q.id];
+        if (val === undefined || val === null) return '';
+
+        // Resolve option IDs to labels for choice-based types
+        if (['multiple_choice', 'dropdown'].includes(q.type) && q.options) {
+          const opt = q.options.find((o) => o.id === val);
+          return opt?.label ?? String(val);
+        }
+        if (q.type === 'checkbox' && q.options && Array.isArray(val)) {
+          return val
+            .map((v) => q.options!.find((o) => o.id === v)?.label ?? v)
+            .join('; ');
+        }
+
+        return Array.isArray(val) ? val.join('; ') : String(val);
+      });
+      return [...base, ...answers];
+    });
+
+    // Assemble CSV with proper escaping
+    const csvRows = [headers, ...rows].map((row) =>
+      row.map((cell) => {
+        const str = String(cell);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      }).join(',')
+    );
+
+    return { csv: csvRows.join('\n'), title: form.title };
   }
 }

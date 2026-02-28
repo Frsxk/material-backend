@@ -1,3 +1,4 @@
+import { status } from 'elysia';
 import { prisma } from '../../db';
 
 interface FormCreateInput {
@@ -63,20 +64,20 @@ export class FormService {
     return forms.map(FormService.toResponse);
   }
 
-  static async getById(id: string): Promise<FormWithCount | null> {
+  static async getById(id: string) {
     const form = await prisma.form.findUnique({
       where: { id },
       include: { _count: { select: { submissions: true } } },
     });
 
-    if (!form) return null;
+    if (!form) return status(404, { error: 'Form not found' });
     return FormService.toResponse(form);
   }
 
   static async update(id: string, userId: string, data: FormUpdateInput) {
     const form = await prisma.form.findUnique({ where: { id } });
-    if (!form) return { error: 'not_found' as const };
-    if (form.userId !== userId) return { error: 'forbidden' as const };
+    if (!form) return status(404, { error: 'Form not found' });
+    if (form.userId !== userId) return status(403, { error: 'Not authorized' });
 
     const updated = await prisma.form.update({
       where: { id },
@@ -94,8 +95,8 @@ export class FormService {
 
   static async delete(id: string, userId: string) {
     const form = await prisma.form.findUnique({ where: { id } });
-    if (!form) return { error: 'not_found' as const };
-    if (form.userId !== userId) return { error: 'forbidden' as const };
+    if (!form) return status(404, { error: 'Form not found' });
+    if (form.userId !== userId) return status(403, { error: 'Not authorized' });
 
     await prisma.form.delete({ where: { id } });
     return { success: true };
@@ -103,8 +104,8 @@ export class FormService {
 
   static async setStatus(id: string, userId: string, newStatus: 'PUBLISHED' | 'CLOSED') {
     const form = await prisma.form.findUnique({ where: { id } });
-    if (!form) return { error: 'not_found' as const };
-    if (form.userId !== userId) return { error: 'forbidden' as const };
+    if (!form) return status(404, { error: 'Form not found' });
+    if (form.userId !== userId) return status(403, { error: 'Not authorized' });
 
     const updated = await prisma.form.update({
       where: { id },

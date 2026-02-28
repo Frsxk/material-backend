@@ -1,95 +1,105 @@
-/**
- * Integration test — run with: bun test/integration.ts
- * Requires the server to NOT be running (starts its own instance).
- */
-const BASE = 'http://localhost:5000';
+import { describe, expect, it } from 'bun:test';
+import { app } from '../src';
 
-async function json(res: Response) {
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return text; }
+function req(path: string, options?: RequestInit) {
+  return app.handle(new Request(`http://localhost${path}`, options));
 }
 
-async function main() {
-  // Start server in background
-  const server = Bun.spawn(['bun', 'src/index.ts'], { cwd: import.meta.dir + '/..', stdout: 'pipe', stderr: 'pipe' });
-  await Bun.sleep(3000);
+function authReq(path: string, token: string, options?: RequestInit) {
+  return app.handle(
+    new Request(`http://localhost${path}`, {
+      ...options,
+      headers: {
+        ...(options?.headers as Record<string, string>),
+        Authorization: `Bearer ${token}`,
+      },
+    })
+  );
+}
 
+describe('Material Forms API', () => {
   let token = '';
+  let userEmail = '';
   let formId = '';
-  let passed = 0;
-  let failed = 0;
 
-  function assert(label: string, condition: boolean, detail?: string) {
-    if (condition) {
-      console.log(`✅ ${label}`);
-      passed++;
-    } else {
-      console.log(`❌ ${label}${detail ? ' — ' + detail : ''}`);
-      failed++;
-    }
-  }
+  it('GET / — health check', async () => {
+    const res = await req('/');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('ok');
+  });
 
-  try {
-    // 1. Health
-    const health = await json(await fetch(BASE + '/'));
-    assert('Health check', health.status === 'ok');
-
-    // 2. Register
-    const reg = await json(await fetch(BASE + '/auth/register', {
+  it('POST /auth/register — creates a new user', async () => {
+    userEmail = `test-${Date.now()}@example.com`;
+    const res = await req('/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Test User', email: `test-${Date.now()}@example.com`, password: 'password123' }),
-    }));
-    assert('Register returns token', typeof reg.token === 'string', JSON.stringify(reg));
-    assert('Register returns user', reg.user?.email?.includes('@'), JSON.stringify(reg));
-    token = reg.token;
-
-    // 3. Duplicate register
-    const dup = await fetch(BASE + '/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Test User', email: reg.user.email, password: 'password123' }),
+      body: JSON.stringify({ name: 'Test User', email: userEmail, password: 'password123' }),
     });
-    assert('Duplicate register → 409', dup.status === 409);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.token).toBeString();
+    expect(body.user.email).toBe(userEmail);
+    token = body.token;
+  });
 
-    // 4. Login
-    const login = await json(await fetch(BASE + '/auth/login', {
+  it('POST /auth/register — duplicate email returns 409', async () => {
+    const res = await req('/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: reg.user.email, password: 'password123' }),
-    }));
-    assert('Login returns token', typeof login.token === 'string', JSON.stringify(login));
-    token = login.token;
+      body: JSON.stringify({ name: 'Dup', email: userEmail, password: 'password123' }),
+    });
+    expect(res.status).toBe(409);
+  });
 
-    // 5. Get me
-    const me = await json(await fetch(BASE + '/auth/me', {
-      headers: { Authorization: `Bearer ${token}` },
-    }));
-    assert('GET /auth/me returns user', me.email === reg.user.email, JSON.stringify(me));
-
-    // 6. Unauthenticated /auth/me
-    const noAuth = await fetch(BASE + '/auth/me');
-    assert('GET /auth/me without token → 401', noAuth.status === 401);
-
-    // 7. Create form
-    const form = await json(await fetch(BASE + '/forms', {
+  it('POST /auth/login — returns token', async () => {
+    const res = await req('/auth/login', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: userEmail, password: 'password123' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.token).toBeString();
+    token = body.token;
+  });
+
+  it('GET /auth/me — returns authenticated user', async () => {
+    const res = await authReq('/auth/me', token);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.email).toBe(userEmail);
+  });
+
+  it('GET /auth/me — 401 without token', async () => {
+    const res = await req('/auth/me');
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /forms — creates a form', async () => {
+    const res = await authReq('/forms', token, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: 'Integration Test Form' }),
-    }));
-    assert('Create form', form.id && form.title === 'Integration Test Form', JSON.stringify(form));
-    formId = form.id;
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.title).toBe('Integration Test Form');
+    formId = body.id;
+  });
 
-    // 8. List forms
-    const forms = await json(await fetch(BASE + '/forms', {
-      headers: { Authorization: `Bearer ${token}` },
-    }));
-    assert('List forms returns array', Array.isArray(forms) && forms.length >= 1);
+  it('GET /forms — lists user forms', async () => {
+    const res = await authReq('/forms', token);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body)).toBe(true);
+    expect(body.length).toBeGreaterThanOrEqual(1);
+  });
 
-    // 9. Update form with questions
-    const updated = await json(await fetch(BASE + `/forms/${formId}`, {
+  it('PATCH /forms/:id — updates form with questions', async () => {
+    const res = await authReq(`/forms/${formId}`, token, {
       method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         title: 'Updated Test Form',
         questions: [
@@ -97,64 +107,96 @@ async function main() {
           { id: 'q2', type: 'short_text', title: 'Your name?', required: false },
         ],
       }),
-    }));
-    assert('Update form', updated.title === 'Updated Test Form', JSON.stringify(updated));
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.title).toBe('Updated Test Form');
+  });
 
-    // 10. Publish form
-    const pub = await json(await fetch(BASE + `/forms/${formId}/publish`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    }));
-    assert('Publish form', pub.status === 'published', JSON.stringify(pub));
+  it('POST /forms/:id/publish — publishes form', async () => {
+    const res = await authReq(`/forms/${formId}/publish`, token, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe('published');
+  });
 
-    // 11. Public form fetch
-    const pubForm = await json(await fetch(BASE + `/public/forms/${formId}`));
-    assert('Public form fetch', pubForm.id === formId && Array.isArray(pubForm.questions), JSON.stringify(pubForm).slice(0, 100));
+  it('GET /public/forms/:id — fetches published form', async () => {
+    const res = await req(`/public/forms/${formId}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(formId);
+    expect(Array.isArray(body.questions)).toBe(true);
+  });
 
-    // 12. Submit response
-    const sub = await json(await fetch(BASE + `/public/forms/${formId}/submit`, {
+  it('POST /public/forms/:id/submit — submits response', async () => {
+    const res = await req(`/public/forms/${formId}/submit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answers: { q1: 'o1', q2: 'Alice' } }),
-    }));
-    assert('Submit response', sub.id && sub.submittedAt, JSON.stringify(sub));
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBeString();
+    expect(body.submittedAt).toBeString();
+  });
 
-    // 13. Submit missing required
-    const badSub = await fetch(BASE + `/public/forms/${formId}/submit`, {
+  it('POST /public/forms/:id/submit — missing required returns 422', async () => {
+    const res = await req(`/public/forms/${formId}/submit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answers: { q2: 'Bob' } }),
     });
-    assert('Missing required → 422', badSub.status === 422);
+    expect(res.status).toBe(422);
+  });
 
-    // 14. Stats
-    const stats = await json(await fetch(BASE + `/forms/${formId}/stats`, {
-      headers: { Authorization: `Bearer ${token}` },
-    }));
-    assert('Stats totalResponses', stats.totalResponses === 1, JSON.stringify(stats).slice(0, 200));
-    assert('Stats has distribution', stats.questionStats?.[0]?.distribution?.Red === 1);
-
-    // 15. Delete form
-    const del = await json(await fetch(BASE + `/forms/${formId}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    }));
-    assert('Delete form', del.success === true);
-
-    // 16. Verify deletion
-    const gone = await fetch(BASE + `/forms/${formId}`, {
-      headers: { Authorization: `Bearer ${token}` },
+  it('POST /public/forms/:id/submit — rate limited on rapid resubmit', async () => {
+    const res = await req(`/public/forms/${formId}/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: { q1: 'o2', q2: 'Charlie' } }),
     });
-    assert('Deleted form → 404', gone.status === 404);
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.retryAfterSeconds).toBeGreaterThan(0);
+  });
 
-  } catch (err) {
-    console.error('💥 Test error:', err);
-    failed++;
-  } finally {
-    server.kill();
-    console.log(`\n📊 Results: ${passed} passed, ${failed} failed`);
-    process.exit(failed > 0 ? 1 : 0);
-  }
-}
+  it('GET /forms/:id/stats — returns form stats', async () => {
+    const res = await authReq(`/forms/${formId}/stats`, token);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.totalResponses).toBe(1);
+    expect(body.questionStats[0]?.distribution?.Red).toBe(1);
+  });
 
-main();
+  it('GET /forms/:id/export — downloads CSV', async () => {
+    const res = await authReq(`/forms/${formId}/export`, token);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    expect(res.headers.get('content-disposition')).toContain('.csv');
+    const csv = await res.text();
+    const lines = csv.split('\n');
+    expect(lines[0]).toContain('Submission ID');
+    expect(lines[0]).toContain('Favorite color?');
+    expect(lines[0]).toContain('Your name?');
+    // Data row should have resolved option label
+    expect(lines[1]).toContain('Red');
+    expect(lines[1]).toContain('Alice');
+  });
+
+  it('GET /forms/:id/export — 401 without token', async () => {
+    const res = await req(`/forms/${formId}/export`);
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE /forms/:id — deletes form', async () => {
+    const res = await authReq(`/forms/${formId}`, token, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+  });
+
+  it('GET /forms/:id — returns 404 after deletion', async () => {
+    const res = await authReq(`/forms/${formId}`, token);
+    expect(res.status).toBe(404);
+  });
+});
